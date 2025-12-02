@@ -25,8 +25,8 @@ This project demonstrates a simple symmetric XOR encryption and decryption schem
 1.  **Clone the repository (if applicable) or download the files:**
 
     ```bash
-    git clone [<repository_url>](https://github.com/CodeAstronomer/Python-GPU-Encryption.git)
-    cd py-gpu-test
+    git clone https://github.com/CodeAstronomer/Python-GPU-Encryption.git
+    cd Python-GPU-Encryption
     ```
 
 2.  **Create a Python Virtual Environment:**
