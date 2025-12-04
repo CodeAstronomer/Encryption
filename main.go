@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/chacha20"
+
 	"github.com/atotto/clipboard"
 )
 
@@ -61,14 +63,25 @@ func parallelKeyStreamXor(text []byte, key []byte, salt []byte) []byte {
 	sem := make(chan struct{}, numCPU)
 	var wg sync.WaitGroup
 
+	keyMaterial := append(make([]byte, 0, len(key)+len(salt)), key...)
+	keyMaterial = append(keyMaterial, salt...)
+	hashedKey := sha256.Sum256(keyMaterial)
+
+	nonceHash := sha256.Sum256(append([]byte("nonce"), salt...))
+	nonce := nonceHash[:12]
+
+	chachaCipher, err := chacha20.NewUnauthenticatedCipher(hashedKey[:], nonce)
+	if err != nil {
+		panic(err)
+	}
+
+	secureChaChaMask := make([]byte, len(text))
+	chachaCipher.XORKeyStream(secureChaChaMask, make([]byte, len(text)))
+
+	seedHash := sha256.Sum256(append(key, salt...))
+	masterSeed := int64(binary.BigEndian.Uint64(seedHash[:8]))
+
 	laneMasks := make([][]byte, VirtualLanes)
-
-	keyWithSalt := append(make([]byte, 0, len(key)+len(salt)), key...)
-	keyWithSalt = append(keyWithSalt, salt...)
-	hasher := sha256.Sum256(keyWithSalt)
-
-	masterSeed := int64(binary.BigEndian.Uint64(hasher[:8]))
-
 	iterPerLane := Iterations / VirtualLanes
 
 	for i := 0; i < VirtualLanes; i++ {
@@ -83,30 +96,32 @@ func parallelKeyStreamXor(text []byte, key []byte, salt []byte) []byte {
 			rng := rand.New(src)
 
 			localMask := make([]byte, len(text))
-			tempBytes := make([]byte, len(text))
+			temp := make([]byte, len(text))
 
 			for j := 0; j < iterPerLane; j++ {
-				rng.Read(tempBytes)
-				// XOR mixing
+				rng.Read(temp)
 				for k := 0; k < len(localMask); k++ {
-					localMask[k] ^= tempBytes[k]
+					localMask[k] ^= temp[k]
 				}
 			}
+
 			laneMasks[laneID] = localMask
 		}(i)
 	}
 
 	wg.Wait()
 
-	// Combine all virtual lanes into final mask
 	finalMask := make([]byte, len(text))
-	for _, laneMask := range laneMasks {
-		for k := 0; k < len(finalMask); k++ {
-			finalMask[k] ^= laneMask[k]
+	for i := 0; i < len(finalMask); i++ {
+		finalMask[i] = secureChaChaMask[i]
+	}
+
+	for _, lm := range laneMasks {
+		for i := 0; i < len(finalMask); i++ {
+			finalMask[i] ^= lm[i]
 		}
 	}
 
-	// Apply mask
 	output := make([]byte, len(text))
 	for i := 0; i < len(text); i++ {
 		output[i] = text[i] ^ finalMask[i]
@@ -121,9 +136,6 @@ func printHelp() {
 	fmt.Println(`
 	Deterministic Parallel Encryptor (Go)
 	=====================================
-	A tool that uses parallel processing to encrypt messages.
-	It guarantees the same output regardless of how many CPU cores are used.
-	Now includes automatic salt rotation (output changes every time).
 
 	Usage:
 	encryptor [flags] <key> <message>
@@ -143,7 +155,6 @@ func printHelp() {
 	Notes:
 	* If your key or message contains spaces, you MUST wrap them in quotes.
 	* The result is automatically copied to your clipboard.
-	* Uses PKCS#7 padding to hide message length and verify keys.
 	`)
 }
 
